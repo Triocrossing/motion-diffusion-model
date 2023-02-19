@@ -3,6 +3,7 @@ from utils.fixseed import fixseed
 from datetime import datetime
 from data_loaders.humanml.motion_loaders.model_motion_loaders import (
     get_mdm_loader,
+    get_mti_loader,
 )  # get_motion_loader
 from data_loaders.humanml.utils.metrics import *
 from data_loaders.humanml.networks.evaluator_wrapper import EvaluatorMDMWrapper
@@ -31,20 +32,9 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
         matching_score_sum = 0
         top_k_count = 0
         # print(motion_loader_name)
+
         with torch.no_grad():
             for idx, batch in enumerate(motion_loader):
-                # try:
-                #     (
-                #         word_embeddings,
-                #         pos_one_hots,
-                #         _,
-                #         sent_lens,
-                #         motions,
-                #         m_lens,
-                #         _,
-                #         _,
-                #     ) = batch
-                # except:
                 (
                     word_embeddings,
                     pos_one_hots,
@@ -103,10 +93,7 @@ def evaluate_fid(eval_wrapper, groundtruth_loader, activation_dict, file):
     print("========== Evaluating FID ==========")
     with torch.no_grad():
         for idx, batch in enumerate(groundtruth_loader):
-            # try:
-            _, _, _, sent_lens, motions, m_lens, *_ = batch
-            # except:
-            # _, _, _, sent_lens, motions, m_lens, _, _ = batch
+            _, _, _, sent_lens, motions, m_lens, _, *_ = batch
             motion_embeddings = eval_wrapper.get_motion_embeddings(
                 motions=motions, m_lens=m_lens
             )
@@ -169,6 +156,10 @@ def get_metric_statistics(values, replication_times):
     std = np.std(values, axis=0)
     conf_interval = 1.96 * std / np.sqrt(replication_times)
     return mean, conf_interval
+
+
+# TODO: viz motion
+# def viz over the motion_loader
 
 
 def evaluation(
@@ -354,6 +345,32 @@ if __name__ == "__main__":
 
     logger.log("creating data loader...")
     split = "test"
+
+    # gen_loader = get_dataset_loader(
+    #     name=args.dataset,
+    #     batch_size=args.batch_size,
+    #     num_frames=None,
+    #     split=split,
+    #     hml_mode="eval",
+    # )
+    # gen_loader = get_dataset_loader(
+    #     name=args.dataset,
+    #     batch_size=args.batch_size,
+    #     num_frames=None,
+    #     split=split,
+    #     # hml_mode="eval_tmi",
+    #     hml_mode="eval",
+    # )
+
+    cgen_loader = get_dataset_loader(
+        name=args.dataset,
+        batch_size=args.batch_size,
+        num_frames=None,
+        split=split,
+        hml_mode="eval_tmi",
+        # hml_mode="eval",
+    )
+
     gt_loader = get_dataset_loader(
         name=args.dataset,
         batch_size=args.batch_size,
@@ -361,14 +378,10 @@ if __name__ == "__main__":
         split=split,
         hml_mode="gt",
     )
-    gen_loader = get_dataset_loader(
-        name=args.dataset,
-        batch_size=args.batch_size,
-        num_frames=None,
-        split=split,
-        hml_mode="eval",
-    )
 
+    # import ipdb
+
+    # ipdb.set_trace()
     # cgen_loader
     # for -> ref <-(test.txt)
     #    # condition
@@ -376,10 +389,10 @@ if __name__ == "__main__":
     #    # gt <> cgen (ours) (ref)
     #    # gt <> gen <> cgen
 
-    num_actions = gen_loader.dataset.num_actions
+    num_actions = cgen_loader.dataset.num_actions
 
     logger.log("Creating model and diffusion...")
-    model, diffusion = create_model_and_diffusion(args, gen_loader)
+    model, diffusion = create_model_and_diffusion(args, cgen_loader)
 
     logger.log(f"Loading checkpoints from [{args.model_path}]...")
     state_dict = torch.load(args.model_path, map_location="cpu")
@@ -396,11 +409,11 @@ if __name__ == "__main__":
         ################
         ## HumanML3D Dataset##
         ################
-        "vald": lambda: get_mdm_loader(
+        "vald": lambda: get_mti_loader(
             model,
             diffusion,
             args.batch_size,
-            gen_loader,
+            cgen_loader,
             mm_num_samples,
             mm_num_repeats,
             gt_loader.dataset.opt.max_motion_length,
