@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 from os.path import join as pjoin
 from tqdm import tqdm
 from utils import dist_util
+import collections
 
 
 def build_models(opt):
@@ -454,32 +455,44 @@ class CompMTIGeneratedDataset(Dataset):
                 #
                 for t in range(repeat_times):
 
-                    # decouple batch
-                    # gen bs motion one by one concate to batch
-                    sample_list = []
-                    # model -> change
-                    for bs_decp_idx in tqdm(range(dataloader.batch_size)):
-                        _model, _model_kwargs = self.model_kwargs_decomposer(
-                            model, model_kwargs, bs_decp_idx
-                        )
-                        _sample = sample_fn(
-                            _model,
-                            motion[bs_decp_idx].unsqueeze(0).shape,
-                            clip_denoised=clip_denoised,
-                            model_kwargs=_model_kwargs,
-                            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-                            init_image=None,
-                            progress=True,  # for now - understand how much we lost perf
-                            dump_steps=None,
-                            noise=None,
-                            const_noise=False,
-                            # when experimenting guidance_scale we want to nutrileze the effect of noise on generation
-                        )
-                        sample_list.append(_sample)
-                    sample = torch.stack(sample_list)
-                    # import ipdb
-
-                    # ipdb.set_trace()
+                    # # decouple batch
+                    # # gen bs motion one by one concate to batch
+                    # sample_list = []
+                    # # model -> change
+                    # for bs_decp_idx in tqdm(range(dataloader.batch_size)):
+                    #     _model, _model_kwargs = self.model_kwargs_decomposer(
+                    #         model, model_kwargs, bs_decp_idx
+                    #     )
+                    # sample = sample_fn(
+                    #     _model,
+                    #     motion[bs_decp_idx].unsqueeze(0).shape,
+                    #     clip_denoised=clip_denoised,
+                    #     model_kwargs=_model_kwargs,
+                    #     skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                    #     init_image=None,
+                    #     progress=True,  # for now - understand how much we lost perf
+                    #     dump_steps=None,
+                    #     noise=None,
+                    #     const_noise=False,
+                    #     # when experimenting guidance_scale we want to nutrileze the effect of noise on generation
+                    # )
+                    # sample = torch.stack(sample_list)
+                    model_kwargs = self.model_kwargs_encoded_appender(
+                        model, model_kwargs, dataloader.batch_size
+                    )
+                    sample = sample_fn(
+                        model,
+                        motion.shape,
+                        clip_denoised=clip_denoised,
+                        model_kwargs=model_kwargs,
+                        skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+                        init_image=None,
+                        progress=True,  # for now - understand how much we lost perf
+                        dump_steps=None,
+                        noise=None,
+                        const_noise=False,
+                        # when experimenting guidance_scale we want to nutrileze the effect of noise on generation
+                    )
 
                     if t == 0:
                         sub_dicts = [
@@ -613,8 +626,62 @@ class CompMTIGeneratedDataset(Dataset):
             )
             # handle the text too
             _model_kwargs["y"]["text"] = "a person <*>."
+            # _model_kwargs["y"]["encoded"] = model.model.encode_text(
+            #     _model_kwargs["y"]["text"]
+            # )
         else:
             model.model.clip_model.get_submodule(
                 "token_embedding"
             ).weight.data = self.default_token_embedding.clone()
         return model, _model_kwargs
+
+    def model_kwargs_encoded_appender(self, model, model_kwargs, batchsize):
+        # to accelerate (avoid alter the model param multiple times)
+        # we save all first in a map and combine later
+
+        encoded = {}
+        for b_idx in range(batchsize):
+            ckpt_exist = (
+                self.dataset.t2m_dataset.data_dict[model_kwargs["y"]["name"][b_idx]][
+                    "cparam"
+                ]
+                is not None
+            )  # if we have the cparam
+
+            if ckpt_exist:
+                model.model.clip_model.get_submodule("token_embedding").weight.data = (
+                    self.dataset.t2m_dataset.data_dict[
+                        model_kwargs["y"]["name"][b_idx]
+                    ]["cparam"]
+                    .clone()
+                    .to(
+                        device=model.model.clip_model.get_submodule(
+                            "token_embedding"
+                        ).weight.data.device
+                    )
+                )
+                # handle the text too
+                model_kwargs["y"]["text"][b_idx] = "a person <*>."
+
+                encoded[b_idx] = model.model.encode_text(
+                    model_kwargs["y"]["text"][b_idx]
+                )
+
+        # put back the default param of text encoder
+        model.model.clip_model.get_submodule(
+            "token_embedding"
+        ).weight.data = self.default_token_embedding.clone()
+
+        for b_idx in range(batchsize):
+            if b_idx not in encoded.keys():
+                encoded[b_idx] = model.model.encode_text(
+                    model_kwargs["y"]["text"][b_idx]
+                )
+
+        assert len(encoded) == batchsize
+
+        model_kwargs["y"]["encoded"] = torch.stack(
+            [x[1].squeeze(0) for x in sorted(encoded.items(), key=lambda x: x[0])]
+        )
+
+        return model_kwargs

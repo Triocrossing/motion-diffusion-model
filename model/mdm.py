@@ -208,9 +208,16 @@ class MDM(nn.Module):
         emb = self.embed_timestep(timesteps)  # [1, bs, d]
 
         force_mask = y.get("uncond", False)
-        if "text" in self.cond_mode:
+
+        if "encoded" in y.keys():
+            # print("encoded mode")
+            # torch.Size([32, 512] < y["encoded"] in cuda
+            emb += self.embed_text(self.mask_cond(y["encoded"], force_mask=force_mask))
+
+        elif "text" in self.cond_mode:
             enc_text = self.encode_text(y["text"])
             emb += self.embed_text(self.mask_cond(enc_text, force_mask=force_mask))
+
         if "action" in self.cond_mode:
             action_emb = self.embed_action(y["action"])
             emb += self.mask_cond(action_emb, force_mask=force_mask)
