@@ -358,7 +358,7 @@ if __name__ == "__main__":
     #     batch_size=args.batch_size,
     #     num_frames=None,
     #     split=split,
-    #     # hml_mode="eval_tmi",
+    #     # hml_mode="eval_mti",
     #     hml_mode="eval",
     # )
 
@@ -367,7 +367,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         num_frames=None,
         split=split,
-        hml_mode="eval_tmi",
+        hml_mode="eval_mti",
         # hml_mode="eval",
     )
 

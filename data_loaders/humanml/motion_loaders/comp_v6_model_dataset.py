@@ -359,7 +359,7 @@ class CompMDMGeneratedDataset(Dataset):
         )
         sent_len = data["cap_len"]
 
-        if self.dataset.mode in ["eval", "eval_tmi"]:
+        if self.dataset.mode in ["eval", "eval_mti"]:
             normed_motion = motion
             denormed_motion = self.dataset.t2m_dataset.inv_transform(normed_motion)
             renormed_motion = (
@@ -545,7 +545,7 @@ class CompMTIGeneratedDataset(Dataset):
         )
         sent_len = data["cap_len"]
 
-        if self.dataset.mode in ["eval", "eval_tmi"]:
+        if self.dataset.mode in ["eval", "eval_mti"]:
             normed_motion = motion
             denormed_motion = self.dataset.t2m_dataset.inv_transform(normed_motion)
             renormed_motion = (

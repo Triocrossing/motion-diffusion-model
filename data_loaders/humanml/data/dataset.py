@@ -890,17 +890,17 @@ class HumanML3D(data.Dataset):
         opt.meta_dir = "./dataset"
         self.opt = opt
         print("Loading dataset %s ..." % opt.dataset_name)
-        tmi_mode = True if mode == "eval_tmi" else False
+        tmi_mode = True if mode == "eval_mti" else False
         if mode == "gt":
             # used by T2M models (including evaluators)
             self.mean = np.load(pjoin(opt.meta_dir, f"{opt.dataset_name}_mean.npy"))
             self.std = np.load(pjoin(opt.meta_dir, f"{opt.dataset_name}_std.npy"))
-        elif mode in ["train", "eval", "text_only", "eval_tmi"]:
+        elif mode in ["train", "eval", "text_only", "eval_mti"]:
             # used by our models
             self.mean = np.load(pjoin(opt.data_root, "Mean.npy"))
             self.std = np.load(pjoin(opt.data_root, "Std.npy"))
 
-        if mode in ["eval", "eval_tmi"]:  # XI: FIXME: maybe a bad idea
+        if mode in ["eval", "eval_mti"]:  # XI: FIXME: maybe a bad idea
             # used by T2M models (including evaluators)
             # this is to translate their norms to ours
             self.mean_for_eval = np.load(
