@@ -310,6 +310,7 @@ class CompMDMGeneratedDataset(Dataset):
                                 "caption": model_kwargs["y"]["text"][bs_i],
                                 "tokens": tokens[bs_i],
                                 "cap_len": len(tokens[bs_i]),
+                                "name": model_kwargs["y"]["name"][bs_i],
                             }
                             for bs_i in range(dataloader.batch_size)
                         ]
@@ -352,11 +353,12 @@ class CompMDMGeneratedDataset(Dataset):
 
     def __getitem__(self, item):
         data = self.generated_motion[item]
-        motion, m_length, caption, tokens = (
+        motion, m_length, caption, tokens, fname = (
             data["motion"],
             data["length"],
             data["caption"],
             data["tokens"],
+            data["name"],
         )
         sent_len = data["cap_len"]
 
@@ -386,6 +388,7 @@ class CompMDMGeneratedDataset(Dataset):
             motion,
             m_length,
             "_".join(tokens),
+            fname,
         )
 
 
@@ -400,7 +403,9 @@ class CompMTIGeneratedDataset(Dataset):
         max_motion_length,
         num_samples_limit,
         scale=1.0,
+        inbetweening_mode=False,  # FIXME
     ):
+        self.inbetweening_mode = inbetweening_mode
         self.dataloader = dataloader
         self.dataset = dataloader.dataset
         assert mm_num_samples < len(dataloader.dataset)
@@ -432,6 +437,12 @@ class CompMTIGeneratedDataset(Dataset):
             mm_idxs = []
         print("mm_idxs", mm_idxs)
 
+        from model.tokenizers.CLIPTokenizer import CLIPTokenizer
+
+        self.tokenizer = CLIPTokenizer.from_pretrained(
+            pretrained_model_name_or_path="", placeholder_token="<*>"
+        )
+
         with torch.no_grad():
             for i, (motion, model_kwargs) in tqdm(enumerate(dataloader)):
                 if (
@@ -454,32 +465,34 @@ class CompMTIGeneratedDataset(Dataset):
                 mm_motions = []
                 #
                 for t in range(repeat_times):
-
-                    # # decouple batch
-                    # # gen bs motion one by one concate to batch
-                    # sample_list = []
-                    # # model -> change
-                    # for bs_decp_idx in tqdm(range(dataloader.batch_size)):
-                    #     _model, _model_kwargs = self.model_kwargs_decomposer(
-                    #         model, model_kwargs, bs_decp_idx
-                    #     )
-                    # sample = sample_fn(
-                    #     _model,
-                    #     motion[bs_decp_idx].unsqueeze(0).shape,
-                    #     clip_denoised=clip_denoised,
-                    #     model_kwargs=_model_kwargs,
-                    #     skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-                    #     init_image=None,
-                    #     progress=True,  # for now - understand how much we lost perf
-                    #     dump_steps=None,
-                    #     noise=None,
-                    #     const_noise=False,
-                    #     # when experimenting guidance_scale we want to nutrileze the effect of noise on generation
-                    # )
-                    # sample = torch.stack(sample_list)
                     model_kwargs = self.model_kwargs_encoded_appender(
                         model, model_kwargs, dataloader.batch_size
                     )
+                    if inbetweening_mode:
+                        prefix_end = 0.25
+                        suffix_start = 0.75
+                        model_kwargs["y"]["inpainted_motion"] = motion.to(
+                            device=dist_util.dev()
+                        )
+                        model_kwargs["y"]["inpainting_mask"] = torch.ones_like(
+                            motion, dtype=torch.bool, device=dist_util.dev()
+                        )  # True means use gt motion
+
+                        for i, length in enumerate(
+                            model_kwargs["y"]["lengths"].cpu().numpy()
+                        ):
+                            start_idx, end_idx = int(prefix_end * length), int(
+                                suffix_start * length
+                            )
+                            model_kwargs["y"]["inpainting_mask"][
+                                i, :, :, start_idx:end_idx
+                            ] = False  # do inpainting in those frames
+
+                            # for vis # FIXME
+                            # gt_frames_per_sample[i] = list(range(0, start_idx)) + list(
+                            # range(end_idx, max_motion_length)
+                            # )
+
                     sample = sample_fn(
                         model,
                         motion.shape,
@@ -508,6 +521,7 @@ class CompMTIGeneratedDataset(Dataset):
                                 "caption": model_kwargs["y"]["text"][bs_i],
                                 "tokens": tokens[bs_i],
                                 "cap_len": len(tokens[bs_i]),
+                                "name": model_kwargs["y"]["name"][bs_i],
                             }
                             for bs_i in range(dataloader.batch_size)
                         ]
@@ -550,12 +564,14 @@ class CompMTIGeneratedDataset(Dataset):
 
     def __getitem__(self, item):
         data = self.generated_motion[item]
-        motion, m_length, caption, tokens = (
+        motion, m_length, caption, tokens, fname = (
             data["motion"],
             data["length"],
             data["caption"],
             data["tokens"],
+            data["name"],
         )
+        # print(data.keys())
         sent_len = data["cap_len"]
 
         if self.dataset.mode in ["eval", "eval_mti"]:
@@ -584,6 +600,7 @@ class CompMTIGeneratedDataset(Dataset):
             motion,
             m_length,
             "_".join(tokens),
+            fname,
         )
 
     """_summary_ input old model and 
@@ -597,48 +614,39 @@ class CompMTIGeneratedDataset(Dataset):
             x = [elem]
         return x
 
-    def model_kwargs_decomposer(self, model, model_kwargs, b_idx):
-        _model_kwargs = {
-            "y": {
-                x: self.unsqueeze_any(model_kwargs["y"][x][b_idx])
-                for x in model_kwargs["y"].keys()
-            }
-        }
+    def add_tokenized(self, samp):
+        max_text_len = 20
+        default_context_length = 77
+        context_length = max_text_len + 2
+        if type(samp) == tuple:
+            raw_text = samp[-1]["y"]["text"]
+        elif type(samp) == dict and "y" in samp:
+            raw_text = samp["y"]["text"]
 
-        ckpt_exist = (
-            self.dataset.t2m_dataset.data_dict[model_kwargs["y"]["name"][b_idx]][
-                "cparam"
-            ]
-            is not None
-        )  # if we have the cparam
+        from model.tokenizers.CLIPTokenizer import tokenize
 
-        if ckpt_exist:
-            model.model.clip_model.get_submodule("token_embedding").weight.data = (
-                self.dataset.t2m_dataset.data_dict[model_kwargs["y"]["name"][b_idx]][
-                    "cparam"
-                ]
-                .clone()
-                .to(
-                    device=model.model.clip_model.get_submodule(
-                        "token_embedding"
-                    ).weight.data.device
-                )
-            )
-            # handle the text too
-            _model_kwargs["y"]["text"] = "a person <*>."
-            # _model_kwargs["y"]["encoded"] = model.model.encode_text(
-            #     _model_kwargs["y"]["text"]
-            # )
-        else:
-            model.model.clip_model.get_submodule(
-                "token_embedding"
-            ).weight.data = self.default_token_embedding.clone()
-        return model, _model_kwargs
+        texts = tokenize(
+            self.tokenizer, raw_text, context_length=context_length, truncate=True
+        )
+        zero_pad = torch.zeros(
+            [texts.shape[0], default_context_length - context_length],
+            dtype=texts.dtype,
+            device=texts.device,
+        )
+        texts = torch.cat([texts, zero_pad], dim=1)
+
+        if type(samp) == tuple:
+            samp[1]["y"]["tokenized"] = texts
+        elif type(samp) == dict and "y" in samp:
+            samp["y"]["tokenized"] = texts
+        return samp
 
     def model_kwargs_encoded_appender(self, model, model_kwargs, batchsize):
         # to accelerate (avoid alter the model param multiple times)
         # we save all first in a map and combine later
-
+        device = model.model.clip_model.get_submodule(
+            "token_embedding"
+        ).weight.data.device
         encoded = {}
         for b_idx in range(batchsize):
             ckpt_exist = (
@@ -654,18 +662,20 @@ class CompMTIGeneratedDataset(Dataset):
                         model_kwargs["y"]["name"][b_idx]
                     ]["cparam"]
                     .clone()
-                    .to(
-                        device=model.model.clip_model.get_submodule(
-                            "token_embedding"
-                        ).weight.data.device
-                    )
+                    .to(device=device)
                 )
+
                 # handle the text too
                 model_kwargs["y"]["text"][b_idx] = "a person <*>."
 
-                encoded[b_idx] = model.model.encode_text(
-                    model_kwargs["y"]["text"][b_idx]
-                )
+                # overkill -> tokenized 32 -> but 1 is needed
+                self.add_tokenized(model_kwargs)
+                # encoded[b_idx] = model.model.encode_text(
+                #     model_kwargs["y"]["text"][b_idx]
+                # )
+                encoded[b_idx] = model.model.clip_model.encode_text(
+                    model_kwargs["y"]["tokenized"][b_idx].unsqueeze(0).to(device=device)
+                ).float()
 
         # put back the default param of text encoder
         model.model.clip_model.get_submodule(

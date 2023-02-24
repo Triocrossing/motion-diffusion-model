@@ -18,32 +18,186 @@ from data_loaders.get_data import get_dataset_loader
 from model.cfg_sampler import ClassifierFreeSampleModel
 
 torch.multiprocessing.set_sharing_strategy("file_system")
+import os.path as osp
+
+viz_motion = False
+
+if viz_motion:
+
+    from data_loaders.humanml.utils.plot_script import plot_3d_motion
+    import data_loaders.humanml.utils.paramUtil as paramUtil
+    from data_loaders.humanml.scripts.motion_process import recover_from_ric
+    from model.rotation2xyz import Rotation2xyz
+
+    skeleton = paramUtil.t2m_kinematic_chain
+    _out_path = "/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/viz"
+    n_joints = 22  # if sample.shape[1] == 263 else 21
+
+    def vis_generated(
+        sample,
+        out_path,
+        motion_loader,
+        motion_loader_name,
+        text,
+        fname,
+        model_kwargs=None,
+        batch_size=1,
+        n_frames=200,
+        inbetween_mode=True,
+    ):
+        rot2xyz = Rotation2xyz(device="cpu", dataset="humanml")
+        # for sample in samples:
+        if motion_loader_name == "ground truth":
+            print("vis gt")
+            return
+            sample = motion_loader.dataset.t2m_dataset.inv_transform(
+                sample.cpu().permute(0, 2, 3, 1)
+            ).float()
+        else:
+            print("vis gen")
+            sample = (
+                sample.cpu().permute(0, 2, 3, 1)
+                * motion_loader.dataset.dataset.std_for_eval
+                + motion_loader.dataset.dataset.mean_for_eval
+            ).float()
+            # sample = sample.cpu().permute(0, 2, 3, 1).float()
+            # according to T2M norms
+            # motion = renormed_motion
+            # sample = motion_loader.dataset.dataset.t2m_dataset.inv_transform(
+            # sample.cpu().permute(0, 2, 3, 1)
+            # ).float()
+        sample = recover_from_ric(sample, n_joints)  # torch.Size([10, 1, 60, 22, 3])
+        # batch size, 1, frames,
+        sample = sample.view(-1, *sample.shape[2:]).permute(
+            0, 2, 3, 1
+        )  # torch.Size([10, 22, 3, 60])
+        rot2xyz_pose_rep = "xyz"  # (
+        #     "xyz"
+        #     if self.model.data_rep in ["xyz", "hml_vec"]
+        #     else self.model.data_rep
+        # )
+        rot2xyz_mask = (
+            None
+            if rot2xyz_pose_rep == "xyz"
+            else model_kwargs["y"]["mask"].reshape(batch_size, n_frames).bool()
+        )
+        sample = rot2xyz(
+            x=sample,
+            mask=rot2xyz_mask,
+            pose_rep=rot2xyz_pose_rep,
+            glob=True,
+            translation=True,
+            jointstype="smpl",
+            vertstrans=True,
+            betas=None,
+            beta=0,
+            glob_rot=None,
+            get_rotations_back=False,
+        )  # torch.Size([10, 22, 3, 60])
+
+        # all_samples.append(sample)
+
+        # for step, pred_xstart in enumerate(all_out):
+        for idx, _sample in enumerate(sample):
+            _sample = _sample.numpy().transpose(2, 0, 1)
+            _text = text[idx]
+            # _fname = fname[idx]
+            caption = f"{fname[idx]}_{motion_loader_name}"
+            _ext = "_a" if "*" in _text else ""
+            _ext += "_inb_" if inbetween_mode else ""
+            animation_save_path = osp.join(out_path, caption + _ext + ".mp4")
+            if inbetween_mode:
+                pref = 0.25
+                suffix = 0.75
+                gt_frames = list(range(n_frames))[
+                    int(n_frames * pref) : int(n_frames * suffix)
+                ]
+            else:
+                gt_frames = []
+            plot_3d_motion(
+                save_path=animation_save_path,
+                kinematic_tree=skeleton,
+                joints=_sample,
+                dataset="humanml",  # self.dataset.name,
+                title=_text,
+                fps=15,  # self.dataset.fps,
+                gt_frames=gt_frames,
+            )
+
+    # def viz_motion_mp4(motion, caption, dataset=None, out_path=_out_path):
+    #     motion = motion.numpy().transpose(2, 0, 1)
+    #     # print(motion)
+    #     # caption = f"{model}_{id}"
+    #     save_file = caption + ".mp4"
+    #     animation_save_path = osp.join(out_path, save_file)
+    #     plot_3d_motion(
+    #         animation_save_path,
+    #         skeleton,
+    #         motion,
+    #         dataset="humanml",  # dataset.name,
+    #         title=caption,
+    #         fps=15,  # dataset.fps,
+    #     )
 
 
 def evaluate_matching_score(eval_wrapper, motion_loaders, file):
     match_score_dict = OrderedDict({})
     R_precision_dict = OrderedDict({})
     activation_dict = OrderedDict({})
+    # ad hoc
+    gt_text_embedding = None
+    gt_word_embeddings = None
+    gt_pos_one_hots = None
+    gt_sent_lens = None
+    # gt_text_embedding = None
     print("========== Evaluating Matching Score ==========")
+
     for motion_loader_name, motion_loader in motion_loaders.items():
         all_motion_embeddings = []
         score_list = []
         all_size = 0
         matching_score_sum = 0
         top_k_count = 0
-        # print(motion_loader_name)
 
+        # print(motion_loader_name)
         with torch.no_grad():
             for idx, batch in enumerate(motion_loader):
                 (
                     word_embeddings,
+                    # pseudo_word_embeddings,?
                     pos_one_hots,
-                    _,
+                    text,
                     sent_lens,
                     motions,
                     m_lens,
                     *_,
+                    fname,
                 ) = batch
+
+                # import ipdb
+
+                # ipdb.set_trace()
+                # if viz motion
+                # global viz_motion
+
+                if viz_motion:
+                    # for idx in range(motions.shape[0]):
+                    # viz_motion = False  # gen once
+                    # import ipdb
+
+                    # ipdb.set_trace()
+                    vis_generated(
+                        sample=motions.unsqueeze(2).permute(0, 3, 2, 1),
+                        out_path=_out_path,
+                        motion_loader=motion_loader,
+                        motion_loader_name=motion_loader_name,
+                        text=text,
+                        fname=fname,
+                    )
+
+                # text_embeddings = a person <>
+                # pseudo_text_embeddings = embedded GT text
+
                 text_embeddings, motion_embeddings = eval_wrapper.get_co_embeddings(
                     word_embs=word_embeddings,
                     pos_ohot=pos_one_hots,
@@ -353,7 +507,7 @@ if __name__ == "__main__":
     #     split=split,
     #     hml_mode="eval",
     # )
-    # gen_loader = get_dataset_loader(
+    # cgen_loader = get_dataset_loader(
     #     name=args.dataset,
     #     batch_size=args.batch_size,
     #     num_frames=None,
@@ -362,12 +516,14 @@ if __name__ == "__main__":
     #     hml_mode="eval",
     # )
 
+    gen_hml_mode = "eval_mti" if args.mti else "eval"
+    # print("eval mode, (not mti)")
     cgen_loader = get_dataset_loader(
         name=args.dataset,
         batch_size=args.batch_size,
         num_frames=None,
         split=split,
-        hml_mode="eval_mti",
+        hml_mode=gen_hml_mode,
         # hml_mode="eval",
     )
 
@@ -378,16 +534,6 @@ if __name__ == "__main__":
         split=split,
         hml_mode="gt",
     )
-
-    # import ipdb
-
-    # ipdb.set_trace()
-    # cgen_loader
-    # for -> ref <-(test.txt)
-    #    # condition
-    #        # gt <> gen (MDM) (ref)
-    #    # gt <> cgen (ours) (ref)
-    #    # gt <> gen <> cgen
 
     num_actions = cgen_loader.dataset.num_actions
 
@@ -409,7 +555,7 @@ if __name__ == "__main__":
         ################
         ## HumanML3D Dataset##
         ################
-        "vald": lambda: get_mti_loader(
+        "mti_token_encoded_real": lambda: get_mti_loader(
             model,
             diffusion,
             args.batch_size,
@@ -419,6 +565,7 @@ if __name__ == "__main__":
             gt_loader.dataset.opt.max_motion_length,
             num_samples_limit,
             args.guidance_param,
+            args.inbetween_mode,
         )
     }
 

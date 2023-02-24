@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import clip
+
+# from src.t2m_models.mdm.utils.misc import *
 from model.rotation2xyz import Rotation2xyz
 
 
@@ -133,6 +135,8 @@ class MDM(nn.Module):
         )
 
         self.rot2xyz = Rotation2xyz(device="cpu", dataset=self.dataset)
+        self.default_tokenizer = None
+        self.default_text_encoder = None
 
     def parameters_wo_clip(self):
         return [
@@ -174,7 +178,7 @@ class MDM(nn.Module):
         # raw_text - list (batch_size length) of strings with input text prompts
         device = next(self.parameters()).device
         max_text_len = (
-            20 if self.dataset in ["humanml", "kit"] else None
+            20 if self.dataset in ["humanml", "kit", "bandai", "full"] else None
         )  # Specific hardcoding for humanml dataset
         if max_text_len is not None:
             default_context_length = 77
@@ -199,6 +203,25 @@ class MDM(nn.Module):
             )  # [bs, context_length] # if n_tokens > 77 -> will truncate
         return self.clip_model.encode_text(texts).float()
 
+    # def encode_text2(self, raw_text):
+    #     device = next(self.parameters()).device
+    #     max_text_len = 20 if self.dataset in ['humanml', 'kit', 'bandai', 'full'] else None  # Specific hardcoding for humanml dataset
+    #     context_length = max_text_len + 2
+    #     default_context_length = 77
+    #     breakpoint()
+    #     raw_text = [i for i in raw_text[0]]
+    #     texts = torch.vstack([self.default_tokenizer(
+    #         rt,
+    #         padding="max_length",
+    #         truncation=True,
+    #         max_length=context_length,  #for humanml self.tokenizer.model_max_length,
+    #         return_tensors="pt").input_ids[0] for rt in raw_text]).to()
+    #     breakpoint()
+
+    #     zero_pad = torch.zeros([texts.shape[0], default_context_length-context_length], dtype=texts.dtype, device=texts.device)
+    #     texts = torch.cat([texts, zero_pad], dim=1)
+    #     return self.default_text_encoder(texts)['pooler_output'].to(weight_dtype).float()
+
     def forward(self, x, timesteps, y=None):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -206,17 +229,20 @@ class MDM(nn.Module):
         """
         bs, njoints, nfeats, nframes = x.shape
         emb = self.embed_timestep(timesteps)  # [1, bs, d]
+        # check()
 
         force_mask = y.get("uncond", False)
+        encoded = y.get("encoded", [])
+        if "text" in self.cond_mode:
+            if encoded == []:
+                enc_text = self.encode_text(y["text"])
 
-        if "encoded" in y.keys():
-            # print("encoded mode")
-            # torch.Size([32, 512] < y["encoded"] in cuda
-            emb += self.embed_text(self.mask_cond(y["encoded"], force_mask=force_mask))
+                emb += self.embed_text(self.mask_cond(enc_text, force_mask=force_mask))
+            else:
 
-        elif "text" in self.cond_mode:
-            enc_text = self.encode_text(y["text"])
-            emb += self.embed_text(self.mask_cond(enc_text, force_mask=force_mask))
+                emb += self.embed_text(
+                    self.mask_cond(encoded.to(x.dtype), force_mask=force_mask)
+                ).to(torch.float32)
 
         if "action" in self.cond_mode:
             action_emb = self.embed_action(y["action"])
@@ -232,7 +258,6 @@ class MDM(nn.Module):
             x = torch.cat(
                 (x_reshaped, emb_gru), axis=1
             )  # [bs, d+joints*feat, 1, #frames]
-
         x = self.input_process(x)
 
         if self.arch == "trans_enc":

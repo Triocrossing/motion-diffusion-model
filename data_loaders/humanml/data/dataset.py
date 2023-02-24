@@ -249,9 +249,9 @@ class Text2MotionDataset(data.Dataset):
 
 
 class Text2MotionDatasetV2(data.Dataset):
-    def __init__(self, opt, mean, std, split_file, w_vectorizer, tmi=False):
+    def __init__(self, opt, mean, std, split_file, w_vectorizer, mti=False):
         # Xi: FIXME:
-        if tmi:
+        if mti:
             self.cparam_dir = "/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/merged"
         self.opt = opt
         self.w_vectorizer = w_vectorizer
@@ -269,6 +269,8 @@ class Text2MotionDatasetV2(data.Dataset):
 
         new_name_list = []
         length_list = []
+
+        mti_ctr = 0
         for name in tqdm(id_list):
             try:
                 motion = np.load(pjoin(opt.motion_dir, name + ".npy"))
@@ -291,9 +293,6 @@ class Text2MotionDatasetV2(data.Dataset):
                         text_dict["caption"] = caption
                         text_dict["tokens"] = tokens
                         text_dict["name"] = name
-
-                        # TODO: load param here if needed
-                        cparam = self.get_cparam_from_name(name) if tmi else None
 
                         if f_tag == 0.0 and to_tag == 0.0:
                             flag = True
@@ -334,6 +333,8 @@ class Text2MotionDatasetV2(data.Dataset):
                                 print(line_split[2], line_split[3], f_tag, to_tag, name)
                                 # break
                 if flag:
+                    # load cparam
+                    cparam = self.get_cparam_from_name(name) if mti else None
                     data_dict[name] = {
                         "motion": motion,
                         "length": len(motion),
@@ -342,12 +343,14 @@ class Text2MotionDatasetV2(data.Dataset):
                     }
                     new_name_list.append(name)
                     length_list.append(len(motion))
+                    if cparam is not None:
+                        mti_ctr += 1
             except:
                 pass
         name_list, length_list = zip(
             *sorted(zip(new_name_list, length_list), key=lambda x: x[1])
         )
-        print(name_list)
+        # print(name_list)
 
         self.mean = mean
         self.std = std
@@ -355,6 +358,10 @@ class Text2MotionDatasetV2(data.Dataset):
         self.data_dict = data_dict
         self.name_list = name_list
         self.reset_max_len(self.max_length)
+
+        print(
+            f"----\n Loaded {mti_ctr} mti results within {len(name_list)} data, portion {float(mti_ctr)*100./len(name_list):.2f}/100."
+        )
 
     def reset_max_len(self, length):
         assert length <= self.max_motion_length
@@ -890,7 +897,7 @@ class HumanML3D(data.Dataset):
         opt.meta_dir = "./dataset"
         self.opt = opt
         print("Loading dataset %s ..." % opt.dataset_name)
-        tmi_mode = True if mode == "eval_mti" else False
+        mti_mode = True if mode == "eval_mti" else False
         if mode == "gt":
             # used by T2M models (including evaluators)
             self.mean = np.load(pjoin(opt.meta_dir, f"{opt.dataset_name}_mean.npy"))
@@ -922,7 +929,7 @@ class HumanML3D(data.Dataset):
                 self.std,
                 self.split_file,
                 self.w_vectorizer,
-                tmi_mode,
+                mti_mode,
             )
             self.num_actions = 1  # dummy placeholder
         assert len(self.t2m_dataset) > 0, (

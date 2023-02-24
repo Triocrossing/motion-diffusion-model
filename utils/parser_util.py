@@ -18,9 +18,6 @@ def parse_and_load_from_model(parser):
     # load args from model
     model_path = get_model_path_from_args()
     args_path = os.path.join(os.path.dirname(model_path), "args.json")
-    # import ipdb
-
-    # ipdb.set_trace()
     assert os.path.exists(args_path), "Arguments json file was not found!"
     with open(args_path, "r") as fr:
         model_args = json.load(fr)
@@ -384,6 +381,31 @@ def add_evaluation_options(parser):
         default="/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/sanity_check_bchmk02-14_15-31",
         type=str,
         help="path to save optimized cparam",
+    )
+
+    group.add_argument(
+        "--mti",
+        action="store_true",
+        help="MTI instead of MDM",
+    )
+
+    group.add_argument(
+        "--inbetween_mode",
+        action="store_true",
+        help="do inbetweening from GT motion",
+    )
+
+    group.add_argument(
+        "--prefix_end",
+        default=0.25,
+        type=float,
+        help="For in_between editing - Defines the end of input prefix (ratio from all frames).",
+    )
+    group.add_argument(
+        "--suffix_start",
+        default=0.75,
+        type=float,
+        help="For in_between editing - Defines the start of input suffix (ratio from all frames).",
     )
 
 

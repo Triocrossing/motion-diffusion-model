@@ -142,6 +142,7 @@ def get_mti_loader(
     max_motion_length,
     num_samples_limit,
     scale,
+    inbetween_mode,
 ):
     opt = {
         "name": "test",  # FIXME
@@ -157,6 +158,7 @@ def get_mti_loader(
         max_motion_length,
         num_samples_limit,
         scale,
+        inbetween_mode,
     )
 
     # could be strange here

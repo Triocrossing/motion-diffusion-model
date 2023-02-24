@@ -62,7 +62,6 @@ class Rotation2xyz:
             betas = torch.zeros([rotations.shape[0], self.smpl_model.num_betas],
                                 dtype=rotations.dtype, device=rotations.device)
             betas[:, 1] = beta
-            # import ipdb; ipdb.set_trace()
         out = self.smpl_model(body_pose=rotations, global_orient=global_orient, betas=betas)
 
         # get the desirable joints
