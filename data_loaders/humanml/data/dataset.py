@@ -23,7 +23,6 @@ def load_pickle(pickle_path):
         data = pickle.load(f)
     return data
 
-
 def save_pickle(data, pickle_path):
     """Save data in a pickle file."""
     with open(pickle_path, "wb") as f:
@@ -252,7 +251,7 @@ class Text2MotionDatasetV2(data.Dataset):
     def __init__(self, opt, mean, std, split_file, w_vectorizer, mti=False):
         # Xi: FIXME:
         if mti:
-            self.cparam_dir = "/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/merged"
+            self.cparam_dir = "/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/merged_27_64_lgen_grad_norm"
         self.opt = opt
         self.w_vectorizer = w_vectorizer
         self.max_length = 20
@@ -321,10 +320,17 @@ class Text2MotionDatasetV2(data.Dataset):
                                         + "_"
                                         + name
                                     )
+                                cparam = (
+                                    self.get_cparam_from_name(name) if mti else None
+                                )
+                                if cparam is not None:
+                                    mti_ctr += 1
                                 data_dict[new_name] = {
                                     "motion": n_motion,
                                     "length": len(n_motion),
                                     "text": [text_dict],
+                                    "cparam": cparam,
+                                    "name": name,
                                 }
                                 new_name_list.append(new_name)
                                 length_list.append(len(n_motion))
@@ -340,6 +346,7 @@ class Text2MotionDatasetV2(data.Dataset):
                         "length": len(motion),
                         "text": text_data,
                         "cparam": cparam,
+                        "name": name,
                     }
                     new_name_list.append(name)
                     length_list.append(len(motion))
@@ -360,7 +367,7 @@ class Text2MotionDatasetV2(data.Dataset):
         self.reset_max_len(self.max_length)
 
         print(
-            f"----\n Loaded {mti_ctr} mti results within {len(name_list)} data, portion {float(mti_ctr)*100./len(name_list):.2f}/100."
+            f"----\n Loaded {mti_ctr} mti results within {len(new_name_list)} data, portion {float(mti_ctr)*100./len(new_name_list):.2f}/100."
         )
 
     def reset_max_len(self, length):
@@ -448,11 +455,18 @@ class Text2MotionDatasetV2(data.Dataset):
 
     def get_cparam_from_name(self, name):
         params_dir = glob(os.path.join(self.cparam_dir, f"param_{name}_epoch_*.pkl"))
+        # params_dir = glob(os.path.join(self.cparam_dir, f"param_{name}_last.pkl"))
         if len(params_dir) > 0:
-            return load_pickle(sorted(params_dir)[-1])
+            with open(
+                "/media/xi/ssd02/Work/Motion/motion-diffusion-model/dataset/HumanML3D/test_mti.txt",
+                "a",
+            ) as the_file:
+                the_file.write(name + "\n")
+            # print(f"loading: {name} -> {params_dir}")
+            return load_pickle(sorted(params_dir)[-1])  # , sorted(params_dir)[-1]
             # self.text_encoder.get_input_embeddings().weight.data = ckpt_param.clone()
         else:
-            return None
+            return None  # , None
 
 
 """For use of training baseline"""

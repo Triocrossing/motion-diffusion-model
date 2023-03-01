@@ -6,6 +6,60 @@ from os.path import join as pjoin
 from tqdm import tqdm
 from utils import dist_util
 import collections
+import pickle
+import os.path as osp
+
+
+def load_pickle_motion(pickle_path):
+    """Load a pickle file."""
+    if not osp.exists(pickle_path):
+        return None
+    with open(pickle_path, "rb") as f:
+        data = pickle.load(f)
+    return data
+
+
+def load_motions(
+    fname,
+    motions,
+    folder_dir="/media/xi/ssd02/Work/textual_inversion/benchmark/save_motion",
+):
+    import ipdb
+
+    ipdb.set_trace()
+    ctr = 0
+    for idx, name in enumerate(fname):
+        randidx = np.random.randint(10)
+        _motion = load_pickle_motion(osp.join(folder_dir, f"{name}_{randidx}.pkl"))
+
+        if _motion is not None:
+            motions[idx] = _motion.clone()
+            ctr += 1
+    print(f"percentage of motion existed: {float(ctr)/len(fname)}")
+    return motions
+
+
+def load_motion(
+    fname,
+    motions,
+    folder_dir="/media/xi/ssd02/Work/textual_inversion/benchmark/save_motion",
+):
+
+    randidx = np.random.randint(10)
+    _motion = load_pickle_motion(osp.join(folder_dir, f"{fname}_{randidx}.pkl"))
+
+    if _motion is not None:
+        return _motion, True
+
+    # print(f"percentage of motion existed: {float(ctr)/len(fname)}")
+    return None, False
+
+
+def load_pickle(pickle_path):
+    """Load a pickle file."""
+    with open(pickle_path, "rb") as f:
+        data = pickle.load(f)
+    return data
 
 
 def build_models(opt):
@@ -464,27 +518,30 @@ class CompMTIGeneratedDataset(Dataset):
                 repeat_times = mm_num_repeats if is_mm else 1
                 mm_motions = []
                 #
+                _model_kwargs = None
+                print("repeat_times: ", repeat_times)
                 for t in range(repeat_times):
-                    model_kwargs = self.model_kwargs_encoded_appender(
-                        model, model_kwargs, dataloader.batch_size
-                    )
+                    if _model_kwargs is None:
+                        _model_kwargs = self.model_kwargs_encoded_appender(
+                            model, model_kwargs, dataloader.batch_size
+                        )
                     if inbetweening_mode:
                         prefix_end = 0.25
                         suffix_start = 0.75
-                        model_kwargs["y"]["inpainted_motion"] = motion.to(
+                        _model_kwargs["y"]["inpainted_motion"] = motion.to(
                             device=dist_util.dev()
                         )
-                        model_kwargs["y"]["inpainting_mask"] = torch.ones_like(
+                        _model_kwargs["y"]["inpainting_mask"] = torch.ones_like(
                             motion, dtype=torch.bool, device=dist_util.dev()
                         )  # True means use gt motion
 
                         for i, length in enumerate(
-                            model_kwargs["y"]["lengths"].cpu().numpy()
+                            _model_kwargs["y"]["lengths"].cpu().numpy()
                         ):
                             start_idx, end_idx = int(prefix_end * length), int(
                                 suffix_start * length
                             )
-                            model_kwargs["y"]["inpainting_mask"][
+                            _model_kwargs["y"]["inpainting_mask"][
                                 i, :, :, start_idx:end_idx
                             ] = False  # do inpainting in those frames
 
@@ -497,7 +554,7 @@ class CompMTIGeneratedDataset(Dataset):
                         model,
                         motion.shape,
                         clip_denoised=clip_denoised,
-                        model_kwargs=model_kwargs,
+                        model_kwargs=_model_kwargs,
                         skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
                         init_image=None,
                         progress=True,  # for now - understand how much we lost perf
@@ -515,13 +572,13 @@ class CompMTIGeneratedDataset(Dataset):
                                 .permute(1, 0)
                                 .cpu()
                                 .numpy(),
-                                "length": model_kwargs["y"]["lengths"][bs_i]
+                                "length": _model_kwargs["y"]["lengths"][bs_i]
                                 .cpu()
                                 .numpy(),
-                                "caption": model_kwargs["y"]["text"][bs_i],
+                                "caption": _model_kwargs["y"]["text"][bs_i],
                                 "tokens": tokens[bs_i],
                                 "cap_len": len(tokens[bs_i]),
-                                "name": model_kwargs["y"]["name"][bs_i],
+                                "name": _model_kwargs["y"]["name"][bs_i],
                             }
                             for bs_i in range(dataloader.batch_size)
                         ]
@@ -535,7 +592,7 @@ class CompMTIGeneratedDataset(Dataset):
                                 .permute(1, 0)
                                 .cpu()
                                 .numpy(),
-                                "length": model_kwargs["y"]["lengths"][bs_i]
+                                "length": _model_kwargs["y"]["lengths"][bs_i]
                                 .cpu()
                                 .numpy(),
                             }
@@ -545,7 +602,7 @@ class CompMTIGeneratedDataset(Dataset):
                 if is_mm:
                     mm_generated_motions += [
                         {
-                            "caption": model_kwargs["y"]["text"][bs_i],
+                            "caption": _model_kwargs["y"]["text"][bs_i],
                             "tokens": tokens[bs_i],
                             "cap_len": len(tokens[bs_i]),
                             "mm_motions": mm_motions[
@@ -577,6 +634,13 @@ class CompMTIGeneratedDataset(Dataset):
         if self.dataset.mode in ["eval", "eval_mti"]:
             normed_motion = motion
             denormed_motion = self.dataset.t2m_dataset.inv_transform(normed_motion)
+
+            # do it here
+            # _denormed_motion, isLoaded = load_motion(fname, denormed_motion)
+
+            # if isLoaded:
+            #     denormed_motion = _denormed_motion.cpu().numpy()
+
             renormed_motion = (
                 denormed_motion - self.dataset.mean_for_eval
             ) / self.dataset.std_for_eval  # according to T2M norms
@@ -641,6 +705,63 @@ class CompMTIGeneratedDataset(Dataset):
             samp["y"]["tokenized"] = texts
         return samp
 
+    # def model_kwargs_encoded_appender(self, model, model_kwargs, batchsize):
+    #     # to accelerate (avoid alter the model param multiple times)
+    #     # we save all first in a map and combine later
+    #     device = model.model.clip_model.get_submodule(
+    #         "token_embedding"
+    #     ).weight.data.device
+    #     encoded = {}
+    #     name = {}
+    #     for b_idx in range(batchsize):
+    #         current_name = model_kwargs["y"]["name"][b_idx]
+    #         ckpt_exist = (
+    #             self.dataset.t2m_dataset.data_dict[current_name]["cparam"] is not None
+    #         )  # if we have the cparam
+
+    #         if ckpt_exist:
+    #             # rewrite the token embedding weight
+    #             model.model.clip_model.get_submodule("token_embedding").weight.data = (
+    #                 self.dataset.t2m_dataset.data_dict[current_name]["cparam"]
+    #                 .clone()
+    #                 .to(device=device)
+    #             )
+
+    #             # handle the text too
+    #             model_kwargs["y"]["text"][b_idx] = "a person <*>."
+    #         else:
+    #             # put back the default param of text encoder
+    #           model.model.clip_model.get_submodule(
+    #               "token_embedding"
+    #           ).weight.data = self.default_token_embedding.clone()
+    #             # overkill -> tokenized 32 -> but 1 is needed
+    #             self.add_tokenized(model_kwargs)
+
+    #             # encoded[b_idx] = model.model.encode_text(
+    #             #     model_kwargs["y"]["text"][b_idx]
+    #             # )
+    #             encoded[b_idx] = model.model.clip_model.encode_text(
+    #                 model_kwargs["y"]["tokenized"][b_idx].unsqueeze(0).to(device=device)
+    #             ).float()
+    #             name[b_idx] = model_kwargs["y"]["name"][b_idx]
+
+    #     # compute for b_idx which do not have cparam
+    #     for b_idx in range(batchsize):
+    #         if b_idx not in encoded.keys():
+    #             encoded[b_idx] = model.model.encode_text(
+    #                 model_kwargs["y"]["text"][b_idx]
+    #             )
+    #             name[b_idx] = model_kwargs["y"]["name"][b_idx]
+
+    #     assert len(encoded) == batchsize
+
+    #     model_kwargs["y"]["encoded"] = torch.stack(
+    #         [x[1].squeeze(0) for x in sorted(encoded.items(), key=lambda x: x[0])]
+    #     )
+    #     # names = torch.stack([x[1] for x in sorted(name.items(), key=lambda x: x[0])])
+
+    #     return model_kwargs
+
     def model_kwargs_encoded_appender(self, model, model_kwargs, batchsize):
         # to accelerate (avoid alter the model param multiple times)
         # we save all first in a map and combine later
@@ -648,6 +769,7 @@ class CompMTIGeneratedDataset(Dataset):
             "token_embedding"
         ).weight.data.device
         encoded = {}
+        name = {}
         for b_idx in range(batchsize):
             ckpt_exist = (
                 self.dataset.t2m_dataset.data_dict[model_kwargs["y"]["name"][b_idx]][
@@ -657,6 +779,7 @@ class CompMTIGeneratedDataset(Dataset):
             )  # if we have the cparam
 
             if ckpt_exist:
+
                 model.model.clip_model.get_submodule("token_embedding").weight.data = (
                     self.dataset.t2m_dataset.data_dict[
                         model_kwargs["y"]["name"][b_idx]
@@ -664,18 +787,14 @@ class CompMTIGeneratedDataset(Dataset):
                     .clone()
                     .to(device=device)
                 )
-
                 # handle the text too
                 model_kwargs["y"]["text"][b_idx] = "a person <*>."
-
                 # overkill -> tokenized 32 -> but 1 is needed
                 self.add_tokenized(model_kwargs)
-                # encoded[b_idx] = model.model.encode_text(
-                #     model_kwargs["y"]["text"][b_idx]
-                # )
                 encoded[b_idx] = model.model.clip_model.encode_text(
                     model_kwargs["y"]["tokenized"][b_idx].unsqueeze(0).to(device=device)
                 ).float()
+                name[b_idx] = model_kwargs["y"]["name"][b_idx]
 
         # put back the default param of text encoder
         model.model.clip_model.get_submodule(
@@ -690,8 +809,16 @@ class CompMTIGeneratedDataset(Dataset):
 
         assert len(encoded) == batchsize
 
-        model_kwargs["y"]["encoded"] = torch.stack(
-            [x[1].squeeze(0) for x in sorted(encoded.items(), key=lambda x: x[0])]
-        )
+        # _name = [name[x] for x in sorted(name)]
 
+        # model_kwargs["y"]["encoded"] = torch.stack(
+        #     [x[1].squeeze(0) for x in sorted(encoded.items(), key=lambda x: x[0])]
+        # )
+
+        model_kwargs["y"]["encoded"] = torch.stack(
+            [encoded[x].squeeze(0) for x in sorted(encoded)]
+        )
+        # import ipdb
+
+        # ipdb.set_trace()
         return model_kwargs

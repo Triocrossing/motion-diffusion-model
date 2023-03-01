@@ -15,12 +15,70 @@ from utils.model_util import create_model_and_diffusion, load_model_wo_clip
 from diffusion import logger
 from utils import dist_util
 from data_loaders.get_data import get_dataset_loader
-from model.cfg_sampler import ClassifierFreeSampleModel
+from model.cfg_sampler import ClassifierFreeSampleModel, NoClassifierFreeSampleModel
 
 torch.multiprocessing.set_sharing_strategy("file_system")
 import os.path as osp
+import pickle
 
 viz_motion = False
+
+
+def load_pickle(pickle_path):
+    """Load a pickle file."""
+    if not osp.exists(pickle_path):
+        return None
+    with open(pickle_path, "rb") as f:
+        data = pickle.load(f)
+    return data
+
+
+def check_percentage(
+    fname,
+    folder_dir="/media/xi/ssd02/Work/textual_inversion/benchmark/save_motion",
+):
+    ctr = 0
+    ctrs = []
+    for idx, name in enumerate(fname):
+        randidx = np.random.randint(10)
+        _motion = load_pickle(osp.join(folder_dir, f"{name}_{randidx}.pkl"))
+
+        if _motion is not None:
+            ctr += 1
+            ctrs.append(1)
+        else:
+            ctrs.append(0)
+    print(f"percentage of motion existed: {float(ctr)/len(fname)}")
+    return ctrs
+
+
+def load_motion(
+    fname,
+    motions,
+    mean_for_eval,
+    std_for_eval,
+    folder_dir="/media/xi/ssd02/Work/textual_inversion/benchmark/save_motion",
+):
+    ctr = 0
+    ctrs = []
+
+    for idx, name in enumerate(fname):
+        randidx = np.random.randint(10)
+        _motion = load_pickle(osp.join(folder_dir, f"{name}_{randidx}.pkl"))
+
+        if _motion is not None:
+            renormed_motion = (_motion - mean_for_eval) / std_for_eval
+            motions[idx] = renormed_motion
+            ctr += 1
+            ctrs.append(1)
+        else:
+            ctrs.append(0)
+    print(f"percentage of motion existed: {float(ctr)/len(fname)}")
+    return motions, ctrs
+
+
+import numpy as np
+
 
 if viz_motion:
 
@@ -30,7 +88,7 @@ if viz_motion:
     from model.rotation2xyz import Rotation2xyz
 
     skeleton = paramUtil.t2m_kinematic_chain
-    _out_path = "/media/xi/ssd02/Work/textual_inversion/benchmark/benchmark_results/viz"
+    _out_path = "/media/xi/ssd02/Work/textual_inversion/benchmark/viz"
     n_joints = 22  # if sample.shape[1] == 263 else 21
 
     def vis_generated(
@@ -40,10 +98,11 @@ if viz_motion:
         motion_loader_name,
         text,
         fname,
+        ctrs,
         model_kwargs=None,
         batch_size=1,
         n_frames=200,
-        inbetween_mode=True,
+        inbetween_mode=False,  # FIXME ..
     ):
         rot2xyz = Rotation2xyz(device="cpu", dataset="humanml")
         # for sample in samples:
@@ -105,6 +164,8 @@ if viz_motion:
             caption = f"{fname[idx]}_{motion_loader_name}"
             _ext = "_a" if "*" in _text else ""
             _ext += "_inb_" if inbetween_mode else ""
+            if ctrs[idx] == 1:
+                _ext += "_m_saved"
             animation_save_path = osp.join(out_path, caption + _ext + ".mp4")
             if inbetween_mode:
                 pref = 0.25
@@ -158,7 +219,7 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
         all_size = 0
         matching_score_sum = 0
         top_k_count = 0
-
+        ctrs = None
         # print(motion_loader_name)
         with torch.no_grad():
             for idx, batch in enumerate(motion_loader):
@@ -177,8 +238,17 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
                 # import ipdb
 
                 # ipdb.set_trace()
+                if motion_loader_name != "ground truth":
+                    mean_for_eval = motion_loader.dataset.dataset.mean_for_eval
+                    std_for_eval = motion_loader.dataset.dataset.std_for_eval
+
+                    motions, ctrs = load_motion(
+                        fname, motions, mean_for_eval, std_for_eval
+                    )
+
                 # if viz motion
                 # global viz_motion
+                print(fname)
 
                 if viz_motion:
                     # for idx in range(motions.shape[0]):
@@ -193,6 +263,7 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
                         motion_loader_name=motion_loader_name,
                         text=text,
                         fname=fname,
+                        ctrs=ctrs,
                     )
 
                 # text_embeddings = a person <>
@@ -548,14 +619,18 @@ if __name__ == "__main__":
         model = ClassifierFreeSampleModel(
             model
         )  # wrapping model with the classifier-free sampler
+    else:
+        model = NoClassifierFreeSampleModel(model)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
 
+    lder_name = gen_hml_mode
+    lder_name += "_inb" if args.inbetween_mode else ""
     eval_motion_loaders = {
         ################
         ## HumanML3D Dataset##
         ################
-        "mti_token_encoded_real": lambda: get_mti_loader(
+        lder_name: lambda: get_mti_loader(
             model,
             diffusion,
             args.batch_size,
